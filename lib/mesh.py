@@ -63,10 +63,10 @@ class Mesh(object):
         self.segm = segm
         self.landm_raw_xyz = landm_raw_xyz
         self.recompute_landmark_indices()
-
-        for line in self.materials_file:
-            if line and line.split() and line.split()[0] == 'map_Ka':
-                self.texture_filepath = os.path.abspath(os.path.join(os.path.dirname(filename), line.split()[1]))
+        if hasattr(self,'materials_file'):
+            for line in self.materials_file:
+                if line and line.split() and line.split()[0] == 'map_Ka':
+                    self.texture_filepath = os.path.abspath(os.path.join(os.path.dirname(filename), line.split()[1]))
     
     def recompute_landmark_indices(self, landmark_fname=None, safe_mode=True):
         filtered_landmarks = dict(
@@ -89,3 +89,12 @@ class Mesh(object):
                 self.landm_regressors = dict([(name, (vertex_indices[i], coefficients[i])) for i, name in enumerate(landmark_names)])
             else:
                 self.landm_regressors = dict([(name, (np.array([closest_vertices[i]]), np.array([1.0]))) for i, name in enumerate(landmark_names)])
+
+    def write_obj(self,filename):
+        with open(filename,'w') as fi:
+            for r in self.v:
+                fi.write('v %f %f %f\n' % (r[0], r[1], r[2]))
+            for r in self.f:
+                if r[0]==r[1] or r[0]==r[2] or r[1]==r[2]:
+                    continue
+                fi.write('f %d %d %d\n' % (r[0]+1, r[1]+1, r[2]+1))

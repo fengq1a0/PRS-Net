@@ -1,93 +1,101 @@
 import tensorflow as tf
 import numpy as np
-from lib.PSRNet import PRSNet
+from lib.PRSNet import PRSNet
 from lib.util import rotate
+import time
 
-num_epochs = 5
-alpha = 0.05
-lr = 0.01
-omega = 100
-
-def ref(para,points,nindex):
-    res = 0
-    for i in range(points.shape[0]):
-        tmp = points[i]-2*para[0:3]*(tf.reduce_sum(tf.multiply(points[i],para[0:3]))+para[3]) / tf.reduce_sum(tf.multiply(para[0:3],para[0:3]))
-        ind = tmp * 32
-        ind = tf.floor(ind)
-        ind = tf.minimum(ind,np.array([31,31,31]))
-        ind = tf.maximum(ind,np.array([0,0,0]))
-        ind = tf.cast(ind,dtype=tf.int32)
-        res += tf.norm(tmp-points[nindex[ind[0],ind[1],ind[2]]])
-    return res
-
-def rot(para,points,nindex):
-    res = 0
-    for i in range(points.shape[0]):
-        tmp = rotate(para,points[i])
-        ind = tmp * 32
-        ind = tf.floor(ind)
-        ind = tf.minimum(ind,np.array([31,31,31]))
-        ind = tf.maximum(ind,np.array([0,0,0]))
-        ind = tf.cast(ind,dtype=tf.int32)
-        res += tf.norm(tmp-points[nindex[ind[0],ind[1],ind[2]]])
-    return res
-
-
-def loss1(para,points,nindex):
-    res = 0
-    for i in range(para.shape[0]):
-        for j in range(para.shape[1]):
-            res += ref(para[i,j],points[i],nindex[i])
-        '''
-        for j in range(3,6,1):
-            res += rot(para[i,j],points[i],nindex[i])
-        '''
-    return res/para.shape[0]
-
-def loss2(para):
-    ans = 0
-    for i in range(para.shape[0]):
-        n11 = para[i,0,0:3]/tf.norm(para[i,0,0:3])
-        n12 = para[i,1,0:3]/tf.norm(para[i,1,0:3])
-        n13 = para[i,2,0:3]/tf.norm(para[i,2,0:3])
-        '''
-        n21 = para[i,3,1:4]/tf.norm(para[i,3,1:4])
-        n22 = para[i,4,1:4]/tf.norm(para[i,4,1:4])
-        n23 = para[i,5,1:4]/tf.norm(para[i,5,1:4])
-        '''
-        M1 = tf.stack([n11,n12,n13])
-        #M2 = tf.stack([n21,n22,n23])
-        
-        III = np.eye(3)
-        A = tf.matmul(M1,tf.transpose(M1))-III
-        #B = tf.matmul(M2,tf.transpose(M2))-III
-        ans += (tf.reduce_sum(tf.multiply(A,A)))# + tf.reduce_sum(tf.multiply(B,B)))
-    return ans/para.shape[0]
-
-def grad(model,x,y,z):
-    with tf.GradientTape() as tape:
-        para = model(x)
-        loss = omega*loss2(para) + loss1(para,y,z)
-    return loss,tape.gradient(loss, model.trainable_variables)
-
+alpha = 0.3
+epochs = 500
+batch_size = 1
+l_r = 0.001
+w_r = 10
 
 voxels = np.load("data\\voxels.npy")
 voxels = voxels[:,:,:,:,np.newaxis]
 voxels = voxels.astype(np.float32)   # [samples,32,32,32,1]
+
 points = np.load("data\\points.npy")
 points = points.astype(np.float32)   # [samples,1000,3]
 nindex = np.load("data\\nindex.npy")
-nindex = nindex.astype(np.int32)     # [samples,32,32,32]
+nindex = nindex.astype(np.float32)     # [samples,32,32,32]
 
-ds = tf.data.Dataset.from_tensor_slices((voxels,points,nindex)).shuffle(100).batch(32)
+
+dataset = tf.data.Dataset.from_tensor_slices((voxels,points,nindex)).shuffle(100).batch(32)
 model = PRSNet(alpha=alpha)
-optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+optimizer = tf.keras.optimizers.Adam(learning_rate=l_r)
 
-for epoch in range(num_epochs):
+def Qmul(t1,t2):
+    t1 = tf.expand_dims(t1,3)
+    t2 = tf.expand_dims(t2,4)
+    tt0 = tf.expand_dims(t1[:,:,:,:,0],4)
+    tt1 = tf.expand_dims(t1[:,:,:,:,1],4)
+    tt2 = tf.expand_dims(t1[:,:,:,:,2],4)
+    tt3 = tf.expand_dims(t1[:,:,:,:,3],4)
+    rr0 = tf.matmul(tf.concat([tt0,tt1*-1,tt2*-1,tt3*-1],axis=4),t2)
+    rr1 = tf.matmul(tf.concat([tt1,tt0,tt3*-1,tt2],axis=4),t2)
+    rr2 = tf.matmul(tf.concat([tt2,tt3,tt0,tt1*-1],axis=4),t2)
+    rr3 = tf.matmul(tf.concat([tt3,tt2*-1,tt1,tt0],axis=4),t2)
+    res = tf.concat([rr0,rr1,rr2,rr3],axis=4)
+    return tf.reshape(res,[res.shape[0],res.shape[1],res.shape[2],4])
+
+def loss1(para,y,z):
+    refy = np.ones([y.shape[0],y.shape[1],1]).astype(np.float32)
+    refy = tf.concat([y,refy],axis=2)
+    refy = tf.expand_dims(refy,3) # b,1000,4,1
+    refpara = tf.expand_dims(para[:,0:3,:],1) # b,1,3,4
+    refpara = tf.matmul(refpara,refy) # b,1000,3,1
+    refy = tf.expand_dims(para[:,0:3,0:3],1) # b,1,3,3
+    refy = tf.expand_dims(refy,4) #b,1,3,3,1
+    refy = tf.matmul(tf.transpose(refy,[0,1,2,4,3]),refy) # b,1,3,1,1
+    refpara = tf.divide(refpara,tf.squeeze(refy,4)) # b,1000,3,1
+    refpara = tf.multiply(refpara,tf.expand_dims(para[:,0:3,0:3],1))*2 # b,1000,3,3
+    refy = tf.expand_dims(y,2)-refpara # b,1000,3,3
+
+    roty = np.zeros([y.shape[0],y.shape[1],1]).astype(np.float32)
+    roty = tf.concat([roty,y],axis=2)
+    roty = tf.expand_dims(roty,2) # b,1000,1,4
+    rotpara = tf.expand_dims(para[:,3:6,:],1) # b,1,3,4
+    rotpara = rotpara/tf.expand_dims(tf.norm(rotpara,axis=3),3)
+    rotpara_inv = tf.multiply(rotpara,np.array([1,-1,-1,-1])) # b,1,3,4
+    roty = Qmul(Qmul(rotpara,roty),rotpara_inv)[:,:,:,1:4] # b,1000,3,3
+    
+    yy = tf.concat([refy,roty],axis=2)
+    ind = yy * 32
+    ind = tf.clip_by_value(ind,0.5,31.5)
+    ind = tf.floor(ind)
+    ind = tf.cast(ind,dtype=tf.int32)
+
+    ppp = tf.map_fn(lambda inp : tf.gather_nd(inp[0],inp[1]),(z,ind),dtype = tf.float32)
+    ppp = yy-ppp
+    return tf.reduce_sum(tf.norm(ppp,axis = 3))/z.shape[0]
+
+
+def loss2(para):
+    t1 = para[:,0:3,0:3]
+    t2 = para[:,3:6,1:4]
+    t1 = tf.divide(t1,tf.expand_dims(tf.norm(t1,axis=2),2))
+    t2 = tf.divide(t2,tf.expand_dims(tf.norm(t2,axis=2),2))
+    t1 = tf.matmul(t1,tf.transpose(t1,[0,2,1]))
+    t2 = tf.matmul(t2,tf.transpose(t2,[0,2,1]))
+    I = np.eye(3)
+    t1 = t1 - I
+    t2 = t2 - I
+    return tf.reduce_sum(tf.multiply(t1,t1))+tf.reduce_sum(tf.multiply(t2,t2))
+
+@tf.function
+def train_step(x,y,z):
+    with tf.GradientTape() as tape:
+        para = model(x)
+        loss = loss1(para,y,z)#w_r*loss2(para)/y.shape[0] + 
+    optimizer.apply_gradients(zip(tape.gradient(loss, model.trainable_variables),model.trainable_variables))
+    return loss
+
+for epoch in range(epochs):
+    start = time.time()
     cnt = 0
-    for x,y,z in ds:
-        loss,grads = grad(model,x,y,z)
-        print("epoch: ",epoch," batch: ",cnt," loss: ",loss)
-        cnt+=1
-        optimizer.apply_gradients(zip(grads, model.trainable_variables))
-    model.save_weights("checkpoints\\PSRNet"+str(epoch))
+    loss_sum = 0
+    for x,y,z in dataset:
+        loss_sum += train_step(x,y,z)
+        cnt += 1
+    print ('Time for epoch {} is {} sec, loss is {}'.format(epoch + 1, time.time()-start,loss_sum/cnt))
+    model.save_weights("checkpoints\\PSRNet"+str(epoch).zfill(3))
