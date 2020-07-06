@@ -7,8 +7,8 @@ import time
 alpha = 0.3
 epochs = 500
 batch_size = 1
-l_r = 0.001
-w_r = 10
+l_r = 0.01
+w_r = 100
 
 voxels = np.load("data\\voxels.npy")
 voxels = voxels[:,:,:,:,np.newaxis]
@@ -20,7 +20,7 @@ nindex = np.load("data\\nindex.npy")
 nindex = nindex.astype(np.float32)     # [samples,32,32,32]
 
 
-dataset = tf.data.Dataset.from_tensor_slices((voxels,points,nindex)).shuffle(100).batch(32)
+dataset = tf.data.Dataset.from_tensor_slices((voxels,points,nindex)).shuffle(200).batch(batch_size)
 model = PRSNet(alpha=alpha)
 optimizer = tf.keras.optimizers.Adam(learning_rate=l_r)
 
@@ -67,8 +67,7 @@ def loss1(para,y,z):
 
     ppp = tf.map_fn(lambda inp : tf.gather_nd(inp[0],inp[1]),(z,ind),dtype = tf.float32)
     ppp = yy-ppp
-    return tf.reduce_sum(tf.norm(ppp,axis = 3))/z.shape[0]
-
+    return tf.reduce_sum(tf.norm(ppp,axis = 3))
 
 def loss2(para):
     t1 = para[:,0:3,0:3]
@@ -86,14 +85,35 @@ def loss2(para):
 def train_step(x,y,z):
     with tf.GradientTape() as tape:
         para = model(x)
-        loss = loss1(para,y,z)#w_r*loss2(para)/y.shape[0] + 
+        loss = (loss1(para,y,z) + w_r*loss2(para))/z.shape[0] 
     optimizer.apply_gradients(zip(tape.gradient(loss, model.trainable_variables),model.trainable_variables))
     return loss
+
+tmp_gt = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]])
+@tf.function
+def pre_train(x):
+    with tf.GradientTape() as tape:
+        para = model(x) # b,6,4
+        loss = tf.reduce_sum(tf.norm(para-tmp_gt,axis=2))/z.shape[0] 
+    optimizer.apply_gradients(zip(tape.gradient(loss, model.trainable_variables),model.trainable_variables))
+    return loss
+
+for epoch in range(10):
+    start = time.time()
+    cnt = 0
+    loss_sum = 0
+    dataset = dataset.shuffle(200)
+    for x,y,z in dataset:
+        loss_sum += pre_train(x)
+        cnt += 1
+    print ('PPP Time for epoch {} is {} sec, loss is {}'.format(epoch + 1, time.time()-start,loss_sum/cnt))
+    model.save_weights("checkpoints\\PSRNet"+str(epoch).zfill(3))
 
 for epoch in range(epochs):
     start = time.time()
     cnt = 0
     loss_sum = 0
+    dataset = dataset.shuffle(200)
     for x,y,z in dataset:
         loss_sum += train_step(x,y,z)
         cnt += 1

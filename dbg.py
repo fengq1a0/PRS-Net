@@ -6,9 +6,9 @@ import time
 
 alpha = 0.3
 epochs = 500
-batch_size = 32
+batch_size = 1
 l_r = 0.01
-w_r = 100
+w_r = 10
 
 voxels = np.load("data\\voxels.npy")
 voxels = voxels[:,:,:,:,np.newaxis]
@@ -20,16 +20,17 @@ nindex = np.load("data\\nindex.npy")
 nindex = nindex.astype(np.float32)     # [samples,32,32,32]
 
 
-dataset = tf.data.Dataset.from_tensor_slices((voxels,points,nindex)).shuffle(100).batch(32)
+dataset = tf.data.Dataset.from_tensor_slices((voxels[:,:,:,:,:],points[:,:,:],nindex[:,:,:,:])).shuffle(200).batch(batch_size)
+model = PRSNet(alpha=alpha)
 optimizer = tf.keras.optimizers.Adam(learning_rate=l_r)
 
 def Qmul(t1,t2):
     t1 = tf.expand_dims(t1,3)
     t2 = tf.expand_dims(t2,4)
-    tt0 = t1[:,:,:,:,0:1]
-    tt1 = t1[:,:,:,:,1:2]
-    tt2 = t1[:,:,:,:,2:3]
-    tt3 = t1[:,:,:,:,3:4]
+    tt0 = tf.expand_dims(t1[:,:,:,:,0],4)
+    tt1 = tf.expand_dims(t1[:,:,:,:,1],4)
+    tt2 = tf.expand_dims(t1[:,:,:,:,2],4)
+    tt3 = tf.expand_dims(t1[:,:,:,:,3],4)
     rr0 = tf.matmul(tf.concat([tt0,tt1*-1,tt2*-1,tt3*-1],axis=4),t2)
     rr1 = tf.matmul(tf.concat([tt1,tt0,tt3*-1,tt2],axis=4),t2)
     rr2 = tf.matmul(tf.concat([tt2,tt3,tt0,tt1*-1],axis=4),t2)
@@ -49,7 +50,6 @@ def loss1(para,y,z):
     refpara = tf.divide(refpara,tf.squeeze(refy,4)) # b,1000,3,1
     refpara = tf.multiply(refpara,tf.expand_dims(para[:,0:3,0:3],1))*2 # b,1000,3,3
     refy = tf.expand_dims(y,2)-refpara # b,1000,3,3
-    np.save("a.npy",refy)
 
     roty = np.zeros([y.shape[0],y.shape[1],1]).astype(np.float32)
     roty = tf.concat([roty,y],axis=2)
@@ -66,9 +66,8 @@ def loss1(para,y,z):
     ind = tf.cast(ind,dtype=tf.int32)
 
     ppp = tf.map_fn(lambda inp : tf.gather_nd(inp[0],inp[1]),(z,ind),dtype = tf.float32)
-    np.save("b.npy",ppp[:,:,0:3,:])
     ppp = yy-ppp
-    return tf.reduce_sum(tf.norm(ppp,axis = 3))/z.shape[0]
+    return tf.reduce_sum(tf.norm(ppp,axis = 3))
 
 
 def loss2(para):
@@ -83,7 +82,21 @@ def loss2(para):
     t2 = t2 - I
     return tf.reduce_sum(tf.multiply(t1,t1))+tf.reduce_sum(tf.multiply(t2,t2))
 
-model = PRSNet(alpha=0.3)
-model.load_weights("checkpoints\\PSRNet075")
-para = model(voxels)
-loss1(para,points,nindex)
+@tf.function
+def train_step(x,y,z):
+    with tf.GradientTape() as tape:
+        para = model(x)
+        loss = (loss1(para,y,z) + w_r*loss2(para))/z.shape[0] 
+    optimizer.apply_gradients(zip(tape.gradient(loss, model.trainable_variables),model.trainable_variables))
+    return loss
+
+for epoch in range(epochs):
+    start = time.time()
+    cnt = 0
+    loss_sum = 0
+    dataset = dataset.shuffle(200)
+    for x,y,z in dataset:
+        loss_sum += train_step(x,y,z)
+        cnt += 1
+    print ('Time for epoch {} is {} sec, loss is {}'.format(epoch + 1, time.time()-start,loss_sum/cnt))
+    model.save_weights("checkpoints\\PSRNet"+str(epoch).zfill(3))

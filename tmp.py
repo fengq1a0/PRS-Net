@@ -1,11 +1,25 @@
 import numpy as np
-a = np.load("a.npy")
-b = np.load("b.npy")
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+a = np.load("res.npy")
+b = np.load("data\\points.npy")
+
+def visualize(para,points,path):
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_xlim(-4, 36)
+    ax.set_ylim(-4, 36)
+    ax.set_zlim(-4, 36)
+    ax.scatter(points[:,0],points[:,1],points[:,2],s=20,c='b')
+    ax.scatter(para[:,0],para[:,1],para[:,2],s=20,c='r')
+    fig.savefig(path)
+    plt.close()
+
+
 for i in range(a.shape[0]):
     tmp1 = a[i]
     tmp2 = b[i]
-    with open("data\\po\\"+str(i).zfill(3)+".obj",'w') as fi:
-        for j in range(1000):
-            fi.write('v %f %f %f 1 0 0\n' % (tmp1[j,0,0], tmp1[j,0,1], tmp1[j,0,2]))
-        for j in range(1000):
-            fi.write('v %f %f %f 0 1 0\n' % (tmp2[j,0,0], tmp2[j,0,1], tmp2[j,0,2]))
+    visualize(tmp1[:,0,:]*32,tmp2*32,"result\\"+str(i).zfill(3)+"_0.png")
+    visualize(tmp1[:,1,:]*32,tmp2*32,"result\\"+str(i).zfill(3)+"_1.png")
+    visualize(tmp1[:,2,:]*32,tmp2*32,"result\\"+str(i).zfill(3)+"_2.png")
+    
